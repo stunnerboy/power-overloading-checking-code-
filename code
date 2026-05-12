@@ -1,0 +1,173 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// Pins
+const int voltagePin = A0;
+const int currentPin = A1;
+const int relayPin = 6;
+
+// ACS712 sensitivity
+float sensitivity = 0.100;
+
+// Offsets
+float voltageOffset = 2.5;
+float currentOffset = 2.5;
+
+// Power limits
+float maxPower = 200.0;
+float reconnectPower = 180.0;
+
+// States
+bool overload = false;
+
+// Store overload power
+float overloadPower = 0;
+
+void setup() {
+
+  Serial.begin(9600);
+
+  pinMode(relayPin, OUTPUT);
+
+  // Relay ON initially
+  digitalWrite(relayPin, HIGH);
+
+  lcd.init();
+  lcd.backlight();
+
+  lcd.setCursor(0,0);
+  lcd.print("CALIBRATING");
+  lcd.setCursor(0,1);
+  lcd.print("PLEASE WAIT");
+
+  // Calibration
+  long vSum = 0;
+  long cSum = 0;
+
+  for(int i=0; i<1000; i++) {
+
+    vSum += analogRead(voltagePin);
+    cSum += analogRead(currentPin);
+
+    delay(2);
+  }
+
+  voltageOffset = ((vSum / 1000.0) * 5.0) / 1023.0;
+  currentOffset = ((cSum / 1000.0) * 5.0) / 1023.0;
+
+  lcd.clear();
+}
+
+void loop() {
+
+  float vSquared = 0;
+  float cSquared = 0;
+
+  // RMS sampling
+  for(int i=0; i<500; i++) {
+
+    // Voltage
+    int vRaw = analogRead(voltagePin);
+
+    float voltage = (vRaw * 5.0) / 1023.0;
+
+    voltage = voltage - voltageOffset;
+
+    vSquared += voltage * voltage;
+
+    // Current
+    int cRaw = analogRead(currentPin);
+
+    float current = (cRaw * 5.0) / 1023.0;
+
+    current = (current - currentOffset) / sensitivity;
+
+    cSquared += current * current;
+  }
+
+  // RMS values
+  float Vrms = sqrt(vSquared / 500.0);
+
+  // Voltage calibration factor
+  Vrms = Vrms * 304;
+
+  float Irms = sqrt(cSquared / 500.0);
+
+  // Remove noise
+  if(Irms < 0.08) {
+    Irms = 0;
+  }
+
+  // Power
+  float Power = Vrms * Irms;
+
+  if(Power < 5) {
+    Power = 0;
+  }
+
+  // OVERLOAD DETECTION
+  if(Power > maxPower && overload == false) {
+
+    overload = true;
+
+    overloadPower = Power;
+
+    digitalWrite(relayPin, LOW);
+  }
+
+  // AUTO RESET
+  if(overload == true && Power < reconnectPower) {
+
+    overload = false;
+
+    digitalWrite(relayPin, HIGH);
+  }
+
+  // SERIAL MONITOR
+  Serial.print("Voltage: ");
+  Serial.print(Vrms);
+
+  Serial.print(" V  Current: ");
+  Serial.print(Irms);
+
+  Serial.print(" A  Power: ");
+  Serial.print(Power);
+
+  Serial.println(" W");
+
+  // LCD DISPLAY
+  lcd.setCursor(0,0);
+
+  if(overload) {
+
+    lcd.print("OVERLOAD!     ");
+
+    lcd.setCursor(0,1);
+
+    lcd.print(overloadPower,0);
+
+    lcd.print("W > 200W   ");
+  }
+
+  else {
+
+    lcd.print("V:");
+    lcd.print(Vrms,0);
+
+    lcd.print(" I:");
+    lcd.print(Irms,2);
+
+    lcd.print("   ");
+
+    lcd.setCursor(0,1);
+
+    lcd.print("P:");
+    lcd.print(Power,0);
+
+    lcd.print("W NORMAL   ");
+  }
+
+  delay(500);
+}
